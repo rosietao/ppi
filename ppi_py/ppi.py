@@ -8,7 +8,8 @@ from statsmodels.stats.weightstats import (
     _zstat_generic,
     _zstat_generic2,
 )
-from sklearn.linear_model import LogisticRegression, PoissonRegressor
+from sklearn.linear_model import LogisticRegression, PoissonRegressor, RidgeCV, LassoCV, ElasticNetCV
+
 import warnings
 
 warnings.simplefilter("ignore")
@@ -475,6 +476,63 @@ def _wls(X, Y, w=None, return_se=False):
         return theta, regression.HC0_se
     else:
         return theta
+    
+    
+# def _ols(X, Y, return_se=False):
+#     """OLS using pseudoinverse with HC0 robust standard errors."""
+#     n, p = X.shape
+
+#     # Estimate
+#     theta = np.linalg.pinv(X) @ Y
+#     if not return_se:
+#         return theta
+
+#     # Residuals
+#     residuals = Y - X @ theta
+
+#     e2 = residuals ** 2
+#     middle = X.T @ np.diag(e2) @ X
+#     cov = np.linalg.pinv(X.T @ X) @ middle @ np.linalg.pinv(X.T @ X)
+#     se = np.sqrt(np.diag(cov))
+
+#     # HC0 robust variance estimator (White)
+#     # XTX_inv = np.linalg.pinv(X.T @ X)
+#     # S = np.zeros((p, p))
+#     # for i in range(n):
+#     #     xi = X[i, :].reshape(-1, 1)
+#     #     S += residuals[i]**2 * (xi @ xi.T)
+#     # cov = XTX_inv @ S @ XTX_inv
+#     # se = np.sqrt(np.diag(cov))
+    
+#     return theta, se
+
+
+# def _wls(X, Y, w=None, return_se=False):
+#     """WLS using pseudoinverse with HC0 robust standard errors."""
+#     X = np.asarray(X)
+#     Y = np.asarray(Y)
+#     n, p = X.shape
+
+#     if w is None or np.all(w == 1):
+#         return _ols(X, Y, return_se=return_se)
+
+#     W = np.diag(w)
+#     XtWX = X.T @ W @ X
+#     XtWY = X.T @ W @ Y
+#     theta = np.linalg.pinv(XtWX) @ XtWY
+
+#     if not return_se:
+#         return theta
+
+#     residuals = Y - X @ theta
+#     S = np.zeros((p, p))
+#     for i in range(n):
+#         xi = X[i, :].reshape(-1, 1)
+#         S += w[i] * residuals[i]**2 * (xi @ xi.T)
+#     cov = np.linalg.pinv(XtWX) @ S @ np.linalg.pinv(XtWX)
+#     se = np.sqrt(np.diag(cov))
+#     return theta, se
+
 
 
 @njit
@@ -546,8 +604,59 @@ def _ols_get_stats(
             w[i] * X[i, :] * (np.dot(X[i, :], pointest) - Yhat[i])
         )
 
-    inv_hessian = np.linalg.inv(hessian).reshape(d, d)
+    # inv_hessian = np.linalg.inv(hessian).reshape(d, d)
+    inv_hessian = np.linalg.pinv(hessian).reshape(d, d)
     return grads, grads_hat, grads_hat_unlabeled, inv_hessian
+
+
+def debias_pointestimate(X, Y, Yhat, X_unlabled, Yhat_unlabled, method="lasso"):
+
+    # Step 1: 在 labeled data 上拟合残差 (bias)
+    residual = Y - Yhat
+    
+    if method == "ridge":
+        model = RidgeCV(cv=5).fit(X, residual)
+    elif method == "lasso":
+        model = LassoCV(cv=5, n_jobs=-1).fit(X, residual)
+    elif method == "elasticnet":        
+        model = ElasticNetCV(cv=5, n_jobs=-1).fit(X, residual)
+    elif method == "ols":
+        model = OLS(residual, exog=X).fit()
+    else:
+        raise ValueError("method must be one of 'ridge', 'lasso', 'elasticnet', 'ols'") 
+
+    # Step 2: 在 unlabeled data 上预测 bias
+    bias_hat_unlabled = model.predict(X_unlabled)
+
+    # Step 3: bias-corrected outcomes
+    Y_unlabled_rect = Yhat_unlabled + bias_hat_unlabled
+
+    return _ols(X_unlabled, Y_unlabled_rect)
+
+def debias_lasso_pointestimate(X, Y, Yhat, X_unlabled, Yhat_unlabled, method="lasso"):
+
+    # Step 1: 在 labeled data 上拟合残差 (bias)
+    residual = Y - Yhat
+    
+    if method == "ridge":
+        model = RidgeCV(cv=5).fit(X, residual)
+    elif method == "lasso":
+        model = LassoCV(cv=5, n_jobs=-1).fit(X, residual)
+    elif method == "elasticnet":        
+        model = ElasticNetCV(cv=5, n_jobs=-1).fit(X, residual)
+    elif method == "ols":
+        model = OLS(residual, exog=X).fit()
+    else:
+        raise ValueError("method must be one of 'ridge', 'lasso', 'elasticnet', 'ols'") 
+
+    # Step 2: 在 unlabeled data 上预测 bias
+    bias_hat_unlabled = model.predict(X_unlabled)
+
+    # Step 3: bias-corrected outcomes
+    Y_unlabled_rect = Yhat_unlabled + bias_hat_unlabled
+
+    return _ols(X_unlabled, Y_unlabled_rect)
+
 
 
 def ppi_ols_pointestimate(
@@ -621,6 +730,8 @@ def ppi_ols_pointestimate(
             coord,
             clip=True,
         )
+        # print("lam =", lam)  # 是否接近0？
+        
         return ppi_ols_pointestimate(
             X,
             Y,
@@ -633,7 +744,7 @@ def ppi_ols_pointestimate(
             w_unlabeled=w_unlabeled,
         )
     else:
-        return ppi_pointest
+        return ppi_pointest, lam
 
 
 def ppi_ols_ci(
@@ -713,6 +824,7 @@ def ppi_ols_ci(
             coord,
             clip=True,
         )
+
         return ppi_ols_ci(
             X,
             Y,
@@ -738,7 +850,7 @@ def ppi_ols_ci(
         np.sqrt(np.diag(Sigma_hat) / n),
         alpha=alpha,
         alternative=alternative,
-    )
+    ), lam
 
 
 """

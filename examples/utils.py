@@ -201,6 +201,8 @@ def make_plots(
             ].width.to_list()
         n_list += [_n] * num_scatter
 
+    print(f"len(n_list): {len(n_list)}, len(ppi_width_list): {len(ppi_width_list)}")
+
     axs[-1].scatter(n_list, ppi_width_list, color=ppi_strokecolor, alpha=0.5)
 
     if plot_classical:
