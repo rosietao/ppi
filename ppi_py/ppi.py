@@ -8,7 +8,7 @@ from statsmodels.stats.weightstats import (
     _zstat_generic,
     _zstat_generic2,
 )
-from sklearn.linear_model import LogisticRegression, PoissonRegressor
+from sklearn.linear_model import LogisticRegression, PoissonRegressor, RidgeCV, LassoCV, ElasticNetCV
 import warnings
 
 warnings.simplefilter("ignore")
@@ -549,6 +549,27 @@ def _ols_get_stats(
     inv_hessian = np.linalg.inv(hessian).reshape(d, d)
     return grads, grads_hat, grads_hat_unlabeled, inv_hessian
 
+
+def debias_pointestimate(X, Y, Yhat, X_unlabled, Yhat_unlabled, method="lasso"):
+
+    residual = Y - Yhat
+    
+    if method == "ridge":
+        model = RidgeCV(cv=5).fit(X, residual)
+    elif method == "lasso":
+        model = LassoCV(cv=5, n_jobs=-1).fit(X, residual)
+    elif method == "elasticnet":        
+        model = ElasticNetCV(cv=5, n_jobs=-1).fit(X, residual)
+    elif method == "ols":
+        model = OLS(residual, exog=X).fit()
+    else:
+        raise ValueError("method must be one of 'ridge', 'lasso', 'elasticnet', 'ols'") 
+
+    bias_hat_unlabled = model.predict(X_unlabled)
+
+    Y_unlabled_rect = Yhat_unlabled + bias_hat_unlabled
+
+    return _ols(X_unlabled, Y_unlabled_rect)
 
 def ppi_ols_pointestimate(
     X,

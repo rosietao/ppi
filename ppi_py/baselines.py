@@ -183,6 +183,32 @@ def classical_quantile_ci(Y, q, alpha=0.1):
 
 """
 
+def classical_ols_pointestimate(X, Y, Yhat_labeled, X_unlabeled, Yhat_unlabeled):
+    """Compute the ordinary least squares coefficients.
+
+    Args:
+        X (ndarray): Labeled features.
+        Y (ndarray): Labeled responses.
+
+    Returns:
+        ndarray: OLS coefficients.
+    """
+
+    return _ols(X, Y, return_se=False)
+
+def imputed_ols_pointestimate(X, Y, Yhat_labeled, X_unlabeled, Yhat_unlabeled):
+    """Compute the ordinary least squares coefficients.
+
+    Args:
+        X (ndarray): Labeled features.
+        Y (ndarray): Labeled responses.
+
+    Returns:
+        ndarray: OLS coefficients.
+    """
+
+    return _ols(X_unlabeled, Yhat_unlabeled, return_se=False)
+
 
 def classical_ols_ci(X, Y, w=None, alpha=0.1, alternative="two-sided"):
     """Confidence interval for the OLS coefficients using the classical method.
