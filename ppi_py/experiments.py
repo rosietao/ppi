@@ -6,7 +6,7 @@ import pandas as pd
 from ppi_py import classical_ols_pointestimate, ppi_ols_pointestimate, debias_pointestimate, imputed_ols_pointestimate
 
 from functools import partial
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from utils import *
 
 
@@ -72,34 +72,43 @@ METHODS = {
 #     df = pd.DataFrame(results)
 #     return df
 
-from tqdm.auto import tqdm
 
 def run(ns, ps, num_trials=30, N=5000, noise=1.0, bet=0, sig=1.0):
     results = []
+    total_steps = len(ps) * len(ns) * num_trials * max(1, len(METHODS))
+    pbar = tqdm(total=total_steps, desc="total", dynamic_ncols=True, smoothing=0.1)
 
-    for p in tqdm(ps, desc="p", position=0):
+    for p in ps:
         _X_total, _Y_total, Yhat_total, theta = generate_data(N, p, noise=noise, beta=bet, sigma=sig)
-
-        for n in tqdm(ns, desc=f"n (p={p})", position=1, leave=False):
-            for trial in tqdm(range(num_trials), desc=f"trial (p={p}, n={n})", position=2, leave=False):
+        for n in ns:
+            for trial in range(num_trials):
                 idx = np.random.permutation(N)
                 X_labeled, X_unlabeled = _X_total[idx[:n]], _X_total[idx[n:]]
                 Y_labeled, Y_unlabeled = _Y_total[idx[:n]], _Y_total[idx[n:]]
                 Yhat_labeled, Yhat_unlabeled = Yhat_total[idx[:n]], Yhat_total[idx[n:]]
 
-                # 方法这层一般不再加条，避免太花；如需可再包一层 tqdm(METHODS.items(), desc="method", position=3)
                 for method_name, method in METHODS.items():
                     try:
                         point = method(X_labeled, Y_labeled, Yhat_labeled, X_unlabeled, Yhat_unlabeled)
                         point = point[0] if isinstance(point, tuple) else point
                         error = (point - theta) ** 2
-                        results.append({
-                            "method": method_name, "p": p, "n": n, "trial": trial, "sigma": sig,
-                            "theta": theta.mean(),
-                            "error": error.mean(), "error_max": error.max(), "error_min": error.min()
-                        })
+                        rec = {
+                            "method": method_name, "p": p, "n": n, "N": N, "trial": trial, "sigma": sig,
+                            "theta": float(np.mean(theta)),
+                            "error": float(np.mean(error)),
+                            "error_max": float(np.max(error)),
+                            "error_min": float(np.min(error)),
+                        }
+                        results.append(rec)
+                        # 在单条进度条的后缀给出简洁状态
+                        pbar.set_postfix_str(
+                            f"p={p} n={n} trial={trial}",
+                            refresh=False
+                        )
                     except Exception as e:
                         tqdm.write(f"[{method_name} ERROR] p={p}, n={n}, trial={trial}: {e}")
+                    finally:
+                        pbar.update(1)
 
-    df = pd.DataFrame(results)
-    return df
+    pbar.close()
+    return pd.DataFrame(results)
