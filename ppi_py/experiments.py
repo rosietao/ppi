@@ -93,7 +93,8 @@ def run(ns, ps, num_trials=30, N=5000, noise=1.0, bet=0, sig=1.0):
                         point = point[0] if isinstance(point, tuple) else point
                         error = (point - theta) ** 2
                         rec = {
-                            "method": method_name, "p": p, "n": n, "N": N, "trial": trial, "sigma": sig,
+                            "method": method_name, "p": p, "n": n, "N": N, "trial": trial, 
+                            "sigma": sig, "beta": bet,
                             "theta": float(np.mean(theta)),
                             "error": float(np.mean(error)),
                             "error_max": float(np.max(error)),

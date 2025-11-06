@@ -550,7 +550,7 @@ def _ols_get_stats(
     return grads, grads_hat, grads_hat_unlabeled, inv_hessian
 
 
-def debias_pointestimate(X, Y, Yhat, X_unlabled, Yhat_unlabled, method="lasso"):
+def debias_pointestimate0(X, Y, Yhat, X_unlabled, Yhat_unlabled, method="lasso"):
 
     residual = Y - Yhat
     
@@ -570,6 +570,105 @@ def debias_pointestimate(X, Y, Yhat, X_unlabled, Yhat_unlabled, method="lasso"):
     Y_unlabled_rect = Yhat_unlabled + bias_hat_unlabled
 
     return _ols(X_unlabled, Y_unlabled_rect)
+
+from typing import Tuple, Dict, Any
+import numpy as np
+
+from sklearn.model_selection import KFold, cross_val_predict
+from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import RidgeCV, LassoCV, ElasticNetCV, LinearRegression
+
+import statsmodels.api as sm
+
+def debias_pointestimate(
+    X, Y, Yhat,
+    X_unlabled, Yhat_unlabled,
+    method: str = "lasso",
+    n_splits: int = 5,
+    random_state: int = 0,
+) -> Tuple[Any, Dict[str, float]]:
+    """
+    在原有去偏估计的基础上，增加对 '残差 ~ X' 这一子模型的拟合优度评估（基于 K 折CV）。
+    返回: (point_estimate, metrics)
+    """
+    # === 1) 目标：残差（要被 X 解释的“偏置”部分） ===
+    residual = Y - Yhat
+
+    # === 2) 模型定义（Pipeline 防止泄漏；OLS 特判） ===
+    if method == "ridge":
+        base = RidgeCV(cv=n_splits)
+        est_for_cv = Pipeline([("scaler", StandardScaler(with_mean=False)), ("model", base)])
+        final_est  = est_for_cv  # 直接复用
+        is_stats_ols = False
+
+    elif method == "lasso":
+        base = LassoCV(cv=n_splits, n_jobs=-1, max_iter=20000, random_state=random_state)
+        est_for_cv = Pipeline([("scaler", StandardScaler(with_mean=False)), ("model", base)])
+        final_est  = est_for_cv
+        is_stats_ols = False
+
+    elif method == "elasticnet":
+        base = ElasticNetCV(cv=n_splits, n_jobs=-1, max_iter=20000, random_state=random_state)
+        est_for_cv = Pipeline([("scaler", StandardScaler(with_mean=False)), ("model", base)])
+        final_est  = est_for_cv
+        is_stats_ols = False
+
+    elif method == "ols":
+        # CV时用 sklearn 的 LinearRegression 做预测；最终拟合用 statsmodels OLS（便于诊断/summary）
+        est_for_cv = Pipeline([("scaler", StandardScaler(with_mean=False)), ("model", LinearRegression())])
+        is_stats_ols = True
+    else:
+        raise ValueError("method must be one of 'ridge', 'lasso', 'elasticnet', 'ols'")
+
+    # === 3) CV 预测 & 拟合优度 ===
+    cv = KFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    y_pred_cv = cross_val_predict(est_for_cv, X, residual, cv=cv, n_jobs=-1)
+
+    rmse_cv = mean_squared_error(residual, y_pred_cv, squared=False)
+    mae_cv  = mean_absolute_error(residual, y_pred_cv)
+    r2_cv   = r2_score(residual, y_pred_cv)
+
+    # 与“只预测均值”的零模型比较
+    y_bar = np.mean(residual)
+    rmse_null = mean_squared_error(residual, np.full_like(residual, y_bar), squared=False)
+    mae_null  = mean_absolute_error(residual, np.full_like(residual, y_bar))
+    # 相对提升（越大越好）
+    rmse_gain = 1.0 - (rmse_cv / rmse_null if rmse_null > 0 else np.nan)
+    mae_gain  = 1.0 - (mae_cv  / mae_null  if mae_null  > 0 else np.nan)
+
+    metrics = {
+        "cv_r2": float(r2_cv),
+        "cv_rmse": float(rmse_cv),
+        "cv_mae": float(mae_cv),
+        "null_rmse": float(rmse_null),
+        "null_mae": float(mae_null),
+        "rmse_relative_gain": float(rmse_gain),  # 例如 0.25 表示相对均值模型 RMSE 降低25%
+        "mae_relative_gain": float(mae_gain),
+        "n_splits": n_splits,
+    }
+
+    # === 4) 在全部有标注数据上拟合最终残差模型 ===
+    if is_stats_ols:
+        # statsmodels OLS（可做更丰富诊断）
+        X_ = sm.add_constant(X, has_constant='add')
+        ols_res = sm.OLS(residual, X_).fit()
+        # 预测未标注偏置
+        X_unl_ = sm.add_constant(X_unlabled, has_constant='add')
+        bias_hat_unlabled = ols_res.predict(X_unl_)
+        fitted_bias_model = ols_res  # 以便外部需要 .summary() 等
+    else:
+        final_est.fit(X, residual)
+        bias_hat_unlabled = final_est.predict(X_unlabled)
+        fitted_bias_model = final_est
+
+    # === 5) 去偏并在未标注集上做最终点估计 ===
+    Y_unlabled_rect = Yhat_unlabled + bias_hat_unlabled  # 你的原逻辑
+    point_estimate = _ols(X_unlabled, Y_unlabled_rect)   # 保持你现有接口
+
+    return point_estimate, metrics
+
 
 def ppi_ols_pointestimate(
     X,
